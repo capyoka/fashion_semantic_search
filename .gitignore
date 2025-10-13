@@ -1,0 +1,63 @@
+# ---- Python basics ----
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dll
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Env files ----
+.env
+!.env.sample
+
+# ---- OS / Editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Logs ----
+logs/
+*.log
+
+# ---- Tests / Coverage / Type checking ----
+.pytest_cache/
+.coverage*
+htmlcov/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.tox/
+
+# ---- Build artifacts ----
+build/
+dist/
+*.egg-info/
+
+# ---- Notebooks ----
+.ipynb_checkpoints/
+
+# ---- Caches ----
+.cache/
+**/__pycache__/
+*.cache
+
+# ---- App data (RAG) ----
+# Vector DB (Qdrant local storage)
+data/vectorstore/
+**/qdrant/**
+
+# Processed artifacts (regenerate via preprocess)
+data/processed/
+data/tmp/
+data/raw/
+
+# (Optional) If raw data is large/private, uncomment:
+# data/raw/
+
+# ---- Misc ----
+*.zip
