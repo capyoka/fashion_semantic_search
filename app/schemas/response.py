@@ -1,6 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import Any, List
 
 class SearchResponse(BaseModel):
-    context: List[str]   # 上位ドキュメント本文
-    scores: List[float]  # そのスコア
+    results: List[Any]  # 商品データの構造が柔軟なので Any にしておく

@@ -1,23 +1,42 @@
 from qdrant_client import QdrantClient, models
 import numpy as np
 
+
 class HybridRetriever:
     """
     QdrantのRRF融合（dense + BM25 sparse）を使うHybrid Retriever。
-    あなたの旧HybridRetrieverと同じ使い方ができます。
     """
 
-    def __init__(self, qdrant: QdrantClient, collection: str, bm25_indexer=None):
+    def __init__(
+        self,
+        qdrant: QdrantClient,
+        collection: str,
+        bm25_indexer=None,
+        auto_load_bm25: bool = True,
+    ):
         """
         Args:
-            qdrant: QdrantClient (例: QdrantClient(":memory:"))
+            qdrant: QdrantClient (例: QdrantClient("http://qdrant:6333"))
             collection: コレクション名
-            bm25_indexer: BM25Sparse インスタンス（idf情報を持つもの）
+            bm25_indexer: 既存のBM25Sparseインスタンス（指定しない場合はQdrantからロード）
+            auto_load_bm25: Trueなら自動でQdrantからBM25メタをロード
         """
         self.qdrant = qdrant
         self.collection = collection
-        self.bm25 = bm25_indexer  # 検索時のquery→sparse変換に使う
+        self.bm25 = bm25_indexer
 
+        if self.bm25 is None and auto_load_bm25:
+            print(f"[Init] Loading BM25 metadata for collection '{collection}' ...")
+            try:
+                self.bm25 = load_bm25_from_qdrant(collection)
+                print("[Init] BM25 loaded successfully.")
+            except Exception as e:
+                print(f"[Warn] Failed to load BM25 from Qdrant: {e}")
+                self.bm25 = None  # dense-only fallback可能に
+
+    # ---------------------------
+    # 検索メイン関数
+    # ---------------------------
     def search(
         self,
         query: str,
@@ -29,49 +48,41 @@ class HybridRetriever:
         Dense + Sparse のハイブリッド検索（Qdrant内RRF融合）
 
         Args:
-            query: ユーザクエリ（英語想定）
-            qvec: OpenAI埋め込みベクトル（text-embedding-3-largeなど）
+            query: ユーザクエリ
+            qvec: OpenAI埋め込みベクトル（例: text-embedding-3-large）
             top_k: 取得件数
-            prefetch_k: fusion前にdense/sparseそれぞれが取得する候補数
-        Returns:
-            docs: [payload辞書のリスト]
+            prefetch_k: dense/sparseそれぞれがfusion前に取得する候補数
         """
+        # --- Sparse（BM25） ---
+        if self.bm25:
+            q_idx, q_vals = self.bm25.transform_query(query)
+            sparse_prefetch = models.Prefetch(
+                query=models.SparseVector(indices=q_idx, values=q_vals),
+                using="text-sparse",
+                limit=prefetch_k,
+            )
+        else:
+            sparse_prefetch = None
+            print("[Warn] BM25 indexer unavailable. Using dense-only search.")
 
-        if self.bm25 is None:
-            raise ValueError("bm25_indexer (BM25Sparse) を指定してください。")
+        # --- Dense ---
+        dense_prefetch = models.Prefetch(
+            query=qvec,
+            using="text-dense",
+            limit=prefetch_k,
+        )
 
-        # --- BM25 sparseベクトル作成 ---
-        q_idx, q_vals = self.bm25.transform_query(query)
+        # --- Qdrant内RRF融合検索 ---
+        prefetch_list = [dense_prefetch]
+        if sparse_prefetch:
+            prefetch_list.insert(0, sparse_prefetch)
 
-        # --- Qdrant内で dense + sparse をRRF融合 ---
         res = self.qdrant.query_points(
             collection_name=self.collection,
-            prefetch=[
-                models.Prefetch(
-                    query=models.SparseVector(indices=q_idx, values=q_vals),
-                    using="text-sparse",
-                    limit=prefetch_k,
-                ),
-                models.Prefetch(
-                    query=qvec,
-                    using="text-dense",
-                    limit=prefetch_k,
-                ),
-            ],
+            prefetch=prefetch_list,
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             with_payload=True,
             limit=top_k,
         )
 
-        docs = [
-            {
-                "id": p.id,
-                "title": p.payload.get("title"),
-                "caption": p.payload.get("_caption"),
-                "image_url": p.payload.get("_image_url"),
-                "combined_text": p.payload.get("_combined_text"),
-                "score": p.score,
-            }
-            for p in res.points
-        ]
-        return docs
+        return res.points

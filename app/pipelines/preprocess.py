@@ -9,14 +9,17 @@ from tqdm import tqdm
 from qdrant_client import QdrantClient, models
 from rank_bm25 import BM25Okapi
 from openai import OpenAI
+from app.core.config import settings
 
 # ============================================================
 # 設定
 # ============================================================
-COLLECTION_NAME = "fashion_hybrid"
-CHAT_MODEL = "gpt-4o-mini"
-EMBED_MODEL = "text-embedding-3-large"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+CHAT_MODEL = settings.OPENAI_CHAT_MODEL
+EMBED_MODEL = settings.OPENAI_EMBED_MODEL
+QDRANT_PATH = settings.QDRANT_PATH
+COLLECTION_NAME = settings.QDRANT_COLLECTION
+OPENAI_API_KEY = settings.OPENAI_API_KEY
 
 CAPTION_SYSTEM_PROMPT = """
 You are a factual assistant for e-commerce product images.
@@ -168,7 +171,7 @@ def embed_parallel(texts: List[str], model_name: str = EMBED_MODEL) -> List[List
 # ============================================================
 # メイン処理：JSON → Qdrant (dense + sparse + raw data)
 # ============================================================
-def run(input_path: str, qdrant_path: str = "./qdrant_hybrid"):
+def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     os.makedirs(qdrant_path, exist_ok=True)
     qdrant = QdrantClient(path=qdrant_path)
 
@@ -204,7 +207,7 @@ def run(input_path: str, qdrant_path: str = "./qdrant_hybrid"):
         all_texts.append(search_text)
 
     # --- Step 2: Dense Embedding ---
-    dense = embed_parallel(all_texts)
+    dense = embed_parallel(all_texts, EMBED_MODEL)
 
     # --- Step 3: Sparse (BM25) ---
     bm25 = BM25Sparse(all_texts)

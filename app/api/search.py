@@ -17,12 +17,7 @@ _embed = AsyncEmbedder(settings.OPENAI_EMBED_MODEL)
 # Qdrantは同期クライアントなので、検索時はスレッドに逃す
 _qdr   = QdrantClient(path=settings.QDRANT_PATH)
 
-_texts = []
-if os.path.exists(settings.PROCESSED_JSONL):
-    with open(settings.PROCESSED_JSONL, "r", encoding="utf-8") as f:
-        _texts = [json.loads(l)["text"] for l in f]
-
-_ret   = HybridRetriever(_qdr, "fashion", _texts)
+_ret   = HybridRetriever(_qdr, settings.QDRANT_COLLECTION)
 
 @router.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest, resp: Response):
@@ -38,18 +33,12 @@ async def search(req: SearchRequest, resp: Response):
     qvec = (await _embed.encode([rewritten]))[0]
 
     # 3) ベクトル検索 + BM25融合（同期→別スレッド実行）
-    docs, scores = await asyncio.to_thread(
-        _ret.search, rewritten, qvec, req.alpha, req.top_k, bm25_kw
+    docs = await asyncio.to_thread(
+        _ret.search, rewritten, qvec, req.top_k, 
     )
-
     # 4) LLMリランク（非同期）
     order = await _gen.rerank(user_q, docs)
     order = [i for i in order if 0 <= i < len(docs)] or list(range(len(docs)))
     docs_r   = [docs[i] for i in order]
-    scores_r = [scores[i] for i in order]
 
-    # 観測用にヘッダで返す（任意）
-    resp.headers["X-Orig-Query"] = user_q
-    resp.headers["X-Rewritten-Query"] = rewritten
-
-    return {"context": docs_r[:req.top_k], "scores": scores_r[:req.top_k]}
+    return {"results": docs_r[:req.top_k]}
