@@ -1,44 +1,77 @@
-from qdrant_client import QdrantClient
-from rank_bm25 import BM25Okapi
+from qdrant_client import QdrantClient, models
 import numpy as np
 
-def _norm(arr):
-    a = np.array(arr, dtype=float)
-    if a.size == 0: return a
-    mn, mx = float(a.min()), float(a.max())
-    if mx - mn < 1e-12: return np.zeros_like(a)
-    return (a - mn) / (mx - mn + 1e-12)
-
 class HybridRetriever:
-    def __init__(self, qdrant: QdrantClient, collection: str, bm25_texts: list[str] | None):
+    """
+    QdrantのRRF融合（dense + BM25 sparse）を使うHybrid Retriever。
+    あなたの旧HybridRetrieverと同じ使い方ができます。
+    """
+
+    def __init__(self, qdrant: QdrantClient, collection: str, bm25_indexer=None):
+        """
+        Args:
+            qdrant: QdrantClient (例: QdrantClient(":memory:"))
+            collection: コレクション名
+            bm25_indexer: BM25Sparse インスタンス（idf情報を持つもの）
+        """
         self.qdrant = qdrant
         self.collection = collection
-        self.bm25 = BM25Okapi([t.split() for t in bm25_texts]) if bm25_texts else None
+        self.bm25 = bm25_indexer  # 検索時のquery→sparse変換に使う
 
     def search(
         self,
         query: str,
         qvec: list[float],
-        alpha: float = 0.6,
         top_k: int = 5,
-        bm25_tokens: list[str] | None = None,   # ★ 追加：BM25用トークンを外部指定可
+        prefetch_k: int = 50,
     ):
-        # Qdrant（ベクトル）
-        hits = self.qdrant.search(collection_name=self.collection, query_vector=qvec, limit=top_k)
-        cand_texts = [h.payload.get("text", "") for h in hits]
-        vec_scores = [1 - h.score for h in hits]  # cosine 距離→類似度
+        """
+        Dense + Sparse のハイブリッド検索（Qdrant内RRF融合）
 
-        # BM25（候補上で簡易再計算）※全文コーパスBM25でもOKだが手軽さ優先
-        if self.bm25 and cand_texts:
-            bm25_local = BM25Okapi([t.split() for t in cand_texts])
-            tokens = bm25_tokens if bm25_tokens else query.split()
-            bm25_scores = bm25_local.get_scores(tokens)
-        else:
-            bm25_scores = [0.0] * len(cand_texts)
+        Args:
+            query: ユーザクエリ（英語想定）
+            qvec: OpenAI埋め込みベクトル（text-embedding-3-largeなど）
+            top_k: 取得件数
+            prefetch_k: fusion前にdense/sparseそれぞれが取得する候補数
+        Returns:
+            docs: [payload辞書のリスト]
+        """
 
-        v, b = _norm(vec_scores), _norm(bm25_scores)
-        hybrid = (alpha * b + (1 - alpha) * v).tolist()
-        ranked = sorted(zip(cand_texts, hybrid), key=lambda x: -x[1])[:top_k]
-        docs = [d for d, _ in ranked]
-        scores = [s for _, s in ranked]
-        return docs, scores
+        if self.bm25 is None:
+            raise ValueError("bm25_indexer (BM25Sparse) を指定してください。")
+
+        # --- BM25 sparseベクトル作成 ---
+        q_idx, q_vals = self.bm25.transform_query(query)
+
+        # --- Qdrant内で dense + sparse をRRF融合 ---
+        res = self.qdrant.query_points(
+            collection_name=self.collection,
+            prefetch=[
+                models.Prefetch(
+                    query=models.SparseVector(indices=q_idx, values=q_vals),
+                    using="text-sparse",
+                    limit=prefetch_k,
+                ),
+                models.Prefetch(
+                    query=qvec,
+                    using="text-dense",
+                    limit=prefetch_k,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            with_payload=True,
+            limit=top_k,
+        )
+
+        docs = [
+            {
+                "id": p.id,
+                "title": p.payload.get("title"),
+                "caption": p.payload.get("_caption"),
+                "image_url": p.payload.get("_image_url"),
+                "combined_text": p.payload.get("_combined_text"),
+                "score": p.score,
+            }
+            for p in res.points
+        ]
+        return docs

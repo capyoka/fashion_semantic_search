@@ -1,0 +1,10 @@
+# .dockerignore
+.env
+__pycache__/
+*.pyc
+.qdrant/
+_qdrant_data/
+data/*/qdrant_data/*/*wal*   # 可: WALは都合により重い
+.git
+.gitignore
+docs/*.ai
