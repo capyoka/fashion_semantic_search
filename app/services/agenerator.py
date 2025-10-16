@@ -63,7 +63,7 @@ class AsyncGenerator:
         self.client = AsyncOpenAI(api_key=key)
         self.model = model
         self.fast_model = fast_model
-        
+
     # --- クエリ書き換え ---
     async def rewrite_query(self, user_query: str, prompt_template: str = PROMPT_REWRITE) -> str:
         prompt = prompt_template.format(user_query=user_query)
@@ -75,8 +75,6 @@ class AsyncGenerator:
             model=self.fast_model if self.fast_model else self.model,
             messages=msgs,
             response_format={"type": "json_object"},
-            reasoning_effort="minimal",
-            verbosity="low",
         )
         res = r.choices[0].message.content
         result = ast.literal_eval(res)
@@ -89,7 +87,6 @@ class AsyncGenerator:
         items: List[str],
         prompt_template: str = PROMPT_RERANK,
     ) -> list[int]:
-        print(items[0])
         enumerated = "\n".join([f"[{i}] {t}" for i, t in enumerate(items)])
         prompt = prompt_template.format(user_query=user_query, enumerated=enumerated)
         msgs = [
