@@ -104,8 +104,7 @@ rag_app/
 │   │   ├── request.py             # Request schema
 │   │   └── response.py            # Response schema
 │   └── services/
-│       ├── embedder.py            # Embedding generation
-│       ├── generator.py           # LLM-based text generation
+│       ├── bm25_sparse.py         # BM25 class
 │       ├── retriever.py           # Hybrid search logic
 │       ├── aembedder.py           # Asynchronous embedding
 │       └── agenerator.py          # Asynchronous LLM generation
@@ -130,8 +129,7 @@ data sampling, and dictionary downloads:
 - **02_overview.ipynb:** Dataset overview analysis  
 - **03_eda.ipynb:** Exploratory data analysis  
 - **04_image_caption.ipynb:** Image caption generation and prompt experiments  
-- **05_create_vectordb.ipynb:** Vector database construction  
-- **06_nltk_download.ipynb:** Dictionary setup for query preprocessing  
+- **05_nltk_download.ipynb:** Dictionary setup for query preprocessing  
 
 ## Key Design Decisions and Trade-offs
 
@@ -348,8 +346,7 @@ rag_app/
 │   │   ├── request.py             # リクエストスキーマ
 │   │   └── response.py            # レスポンススキーマ
 │   └── services/
-│       ├── embedder.py            # 埋め込み生成
-│       ├── generator.py           # LLM生成
+│       ├── bm25_sparse            # BM25検索
 │       ├── retriever.py           # ハイブリッド検索
 │       ├── aembedder.py           # 非同期埋め込み
 │       └── agenerator.py          # 非同期LLM生成
@@ -372,8 +369,7 @@ notebooksには、EDA、データサンプリング、辞書ダウントード�
 - 02_overview.ipynb: データセット概要分析
 - 03_eda.ipynb: EDA用
 - 04_image_caption.ipynb: 画像キャプション生成、プロンプト実験
-- 05_create_vectordb.ipynb: ベクトルデータベース構築
-- 06_nltk_download.ipynb: クエリ前処理のための辞書取得
+- 05_nltk_download.ipynb: クエリ前処理のための辞書取得
 
 ## 主な設計上の決定とトレードオフ
 ### 1. モデル選定（Model Selection）
