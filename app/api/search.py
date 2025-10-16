@@ -16,7 +16,7 @@ router = APIRouter(tags=["rag"])
 # ============================================================
 
 # 非同期 LLM クライアント
-_gen = AsyncGenerator(settings.OPENAI_CHAT_MODEL)
+_gen = AsyncGenerator(settings.OPENAI_CHAT_MODEL, settings.OPENAI_CHAT_FAST_MODEL)
 _embed = AsyncEmbedder(settings.OPENAI_EMBED_MODEL)
 
 # Qdrant（ローカル or Remote）
@@ -37,17 +37,18 @@ async def search(req: SearchRequest, resp: Response):
     ハイブリッド検索 (dense + sparse RRF融合) + LLMリランク
     """
     user_q = (req.query or "").strip()
-    top_k = req.top_k or 5
+    top_k = req.top_k or 30
 
     # 1️⃣ クエリ書き換え（rewrite のみ実行）
-    rewritten = await _gen.rewrite_query(user_q)
+    rewritten, keywords = await _gen.rewrite_query(user_q)
     rewritten = rewritten.strip() if rewritten else user_q
+    keywords = keywords.strip() if keywords else user_q
 
     # 2️⃣ 埋め込み生成（非同期）
     qvec = (await _embed.encode([rewritten]))[0]
 
     # 3️⃣ ハイブリッド検索（同期Qdrant → スレッド実行）
-    docs = await asyncio.to_thread(_ret.search, rewritten, qvec, top_k)
+    docs = await asyncio.to_thread(_ret.search, keywords, qvec, top_k)
 
     # BM25メタデータPoint（__bm25_meta__）を除外
     docs = [d for d in docs if not d.get("_bm25_meta")]

@@ -10,12 +10,14 @@ import re
 import json
 import time
 import uuid
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 
 from tqdm import tqdm
 from qdrant_client import QdrantClient, models
 from openai import OpenAI
+from openai import RateLimitError, APIError
 
 from app.core.config import settings
 from app.services.bm25_sparse import BM25Sparse
@@ -25,12 +27,12 @@ from app.services.bm25_sparse import BM25Sparse
 # 設定
 # ============================================================
 CHAT_MODEL = settings.OPENAI_CHAT_MODEL
-EMBED_MODEL = settings.OPENAI_EMBED_MODEL or "text-embedding-3-large"
+EMBED_MODEL = settings.OPENAI_EMBED_MODEL
 QDRANT_PATH = os.path.abspath(settings.QDRANT_PATH)
 COLLECTION_NAME = settings.QDRANT_COLLECTION
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 
-CAPTION_MAX_WORKERS = 6
+CAPTION_MAX_WORKERS = 5
 EMBED_BATCH_SIZE = 64
 QDRANT_BATCH_SIZE = 256
 
@@ -73,24 +75,47 @@ def extract_image_refs(product: Dict) -> List[str]:
 # キャプション生成
 # ============================================================
 CAPTION_SYSTEM_PROMPT = """
-You are a factual assistant for e-commerce product images.
-Always write in English.
-Produce concise, objective captions (3–5 sentences).
-Describe only what is visible in the image or explicitly provided in the user prompt.
-Avoid speculation or marketing tone.
+あなたはEC商品の画像に対する事実ベースのキャプション作成アシスタントです。
+英語で、客観的なキャプションを1つ（3〜5文）出力します。
+- 画像に見える内容、または提供コンテキスト/ユーザ意図に明示された事実のみを書くこと。
+- 画像とテキストが矛盾する場合は画像を優先すること。
+- マーケティング調や主観的評価、推測の断定は禁止。事実のみ、簡潔に。
+- 出力はキャプション本文のみ。
+
+ファッション向けに、見える範囲で次の可視属性を優先的に含めてください：
+- シルエット/フィット・丈、ネックライン・袖、ウエスト/裾の作り、開閉（ボタン/ジッパー/金具）、
+  ポケット/ベルト/ライニング、素材感・テクスチャ（sheer/opaque/glossy/drape/stretch）、
+  パターン/装飾（lace/rhinestones等）、色・colorway、セット/同梱、アクセサリー特有の要素（例：レンズ色/形状）。
+
+目的・季節・オケージョンの扱い（明示がある場合のみ）：
+- 入力に Intent/Season/Occasion が与えられていれば、最後の1文で「見た目の根拠」を添えて軽く結びつけること。
+  例：海/夏 → 「lightweight-looking, open-weave, quick-drying-looking」など“見た目”記述に留める。
+- 性能・機能（UV保護・吸汗速乾・防水等）は、画像やテキストで明記されない限り主張しない。
 """
 
 CAPTION_USER_PROMPT = """
-Write one concise factual caption (3–5 sentences) for this product image using both the visual content and the context below.
-Context:
-Title: {title}
-Store: {store}
-Features: {features}
+入力：
+- 画像
+- コンテキスト（欠落あり）：
+  - Title: {title}
+  - Store: {store}
+  - Features: {features}
+
+タスク：
+画像で確認できる属性を最優先し、矛盾のない範囲でコンテキストとユーザ意図の明示的事実も統合して、
+英語で3〜5文の事実ベースのキャプションを1つ作成してください。
+- 可能な範囲で、シルエット/丈、ネックライン/袖、構造的ディテール、開閉、ポケット/ベルト/ライニング、
+  素材感/テクスチャ、パターン/装飾、色/バリエーション、セット/同梱、アクセサリー固有要素を含めてください。
+- Intent/Season/Occasion が与えられている場合、最後の1文で「見た目に基づく適合理由」を簡潔に述べてよい
+  （例：通気性のあるメッシュ、軽く見えるドレープ、開放的なサンダルストラップ等）。
+- 性能主張（UV・吸汗速乾・保温など）は、画像/テキストで明記されない限り避けてください。
+出力はキャプション本文のみ。
 """
 
 
+
 def caption_images(image_urls: List[str], title: str, store: str, features: str) -> Optional[str]:
-    """1商品分のキャプションを生成"""
+    """1商品分のキャプションを生成（堅牢なリトライ付き）"""
     if not image_urls:
         return None
 
@@ -101,24 +126,47 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
         features=features or "None",
     )
 
+    # 画像は1枚ずつ送る想定
     messages = [
         {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": [
                 {"type": "text", "text": user_prompt},
-                *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls],
+                {"type": "image_url", "image_url": {"url": image_urls[0]}},
             ],
+            "reasoning_effort": "minimal",
+            "verbosity": "low",
         },
     ]
 
-    for attempt in range(3):
+    MAX_RETRIES = 5
+    for attempt in range(MAX_RETRIES):
         try:
-            r = client.chat.completions.create(model=CHAT_MODEL, messages=messages, temperature=0.2)
-            return r.choices[0].message.content.strip()
+            r = client.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=messages,
+                temperature=0.2,
+                timeout=60,  # 念のためタイムアウト指定
+            )
+            caption = r.choices[0].message.content.strip()
+            return caption
+
+        except RateLimitError as e:
+            # ✅ レート制限時：指数バックオフ＋ランダムスリープ
+            wait = min(30, 2 ** attempt + random.uniform(0, 3))
+            print(f"⚠️ RateLimitError: retrying in {wait:.1f}s ({attempt+1}/{MAX_RETRIES})")
+            time.sleep(wait)
+        except APIError as e:
+            # ✅ APIエラー（5xx系）：指数バックオフで再試行
+            wait = min(20, 2 ** attempt)
+            print(f"⚠️ APIError: {e}. retrying in {wait}s")
+            time.sleep(wait)
         except Exception as e:
-            print(f"❌ Caption generation failed ({attempt+1}/3): {e}")
+            # その他エラーは1回だけ待って続行
+            print(f"❌ Caption generation failed ({attempt+1}/{MAX_RETRIES}): {e}")
             time.sleep(3)
+    print("🚫 Caption generation failed after maximum retries.")
     return None
 
 

@@ -9,20 +9,27 @@ SYSTEM_PROMPT_BASE = """
 You are a helpful assistant. Answer concisely in Japanese.
 """
 
-PROMPT_REWRITE = """
-以下のユーザ質問を、検索に適したクエリに短く書き換えてください。
-- ノイズを除去
-- 具体的な属性（用途・季節・素材・価格帯等）があれば保持
-- 日本語で、30字以内、改行なし、1行で出力
-質問: {user_query}
-"""
+PROMPT_REWRITE =  """
+あなたはファッション商品の検索支援アシスタントです。
+ユーザが入力した自然文の検索クエリを、検索システムで扱いやすい2種類の英語クエリに変換してください。
 
-PROMPT_KEYWORDS = """
-以下のユーザ質問から、BM25向けの重要キーワードを抽出してください。
-- 日本語
-- {k_min}〜{k_max}語
-- 出力は「カンマ区切り」のみ（例: 速乾, 夏, ワンピース）
-質問: {user_query}
+目的：
+1. ベクトル検索（semantic search）に適した自然な英文フレーズ（semantic_query）
+2. 単語検索（BM25）に適した主要キーワードの列（bm25_query）
+
+ルール：
+- 出力は英語のJSON形式で行う。
+- semantic_query は1文または1フレーズで、自然言語に近いが簡潔な検索文にする。
+- bm25_query はスペース区切りの主要キーワード群にする。
+- ユーザが明示していない属性（素材、色、用途など）を推測して追加しない。
+- 主観的な表現（かわいい、写真映え、人気など）は、見た目や用途に基づく中立的な表現へ置き換える。
+  例：「かわいい服」→「stylish outfit」, 「写真映え」→「bright and eye-catching」
+- 検索語として有効な要素（カテゴリ、用途、季節、色、素材、スタイル、オケージョンなど）を中心に構成する。
+- 出力形式は必ず以下のJSON形式に従う：
+{
+  "semantic_query": "...",
+  "bm25_query": "..."
+}
 """
 
 PROMPT_RERANK = """
@@ -60,6 +67,7 @@ class Generator:
             model=self.model,
             messages=msgs,
             temperature=0.2,
+            response_format={"type": "json_object"}
         )
         return r.choices[0].message.content.strip()
 
@@ -70,26 +78,13 @@ class Generator:
             {"role": "system", "content": "Japanese concise query rewriter."},
             {"role": "user", "content": prompt},
         ]
-        r = self.client.chat.completions.create(model=self.model, messages=msgs, temperature=0.0)
-        return r.choices[0].message.content.strip()
-
-    # --- BM25用キーワード抽出 ---
-    def extract_bm25_keywords(
-        self,
-        user_query: str,
-        k_min: int = 3,
-        k_max: int = 10,
-        prompt_template: str = PROMPT_KEYWORDS,
-    ) -> list[str]:
-        prompt = prompt_template.format(user_query=user_query, k_min=k_min, k_max=k_max)
-        msgs = [
-            {"role": "system", "content": "Japanese keyword extractor."},
-            {"role": "user", "content": prompt},
-        ]
-        r = self.client.chat.completions.create(model=self.model, messages=msgs, temperature=0.0)
-        line = r.choices[0].message.content.strip()
-        parts = [w.strip() for w in re.split(r"[,\u3001]", line) if w.strip()]
-        return parts[:k_max]
+        r = self.client.chat.completions.create(
+            model=self.model,
+            messages=msgs,
+            temperature=0.0,
+            response_format={"type": "json_object"}
+        )
+        return r.choices[0].message.parsed
 
     # --- LLMリランク ---
     def rerank(
