@@ -55,6 +55,7 @@ data/vectorstore/
 data/processed/
 data/tmp/
 data/raw/
+data/sample/
 
 # (Optional) If raw data is large/private, uncomment:
 # data/raw/

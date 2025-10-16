@@ -194,7 +194,7 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
             r = client.chat.completions.create(
                 model=CHAT_MODEL,
                 messages=messages,
-                timeout=60,  # Timeout specification for safety
+                timeout=120,  # Timeout specification for safety
                 reasoning_effort="minimal",
                 verbosity="low",
             )

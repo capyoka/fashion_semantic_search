@@ -18,7 +18,7 @@ the system understands and processes natural language queries such as
 ### Method 1: Docker (Recommended and Easiest)
 ```bash
 # 1. Move to the project directory
-cd rag_app
+cd semantic_fashion_search
 
 # 2. Set environment variables
 cp .env.sample .env
@@ -32,7 +32,7 @@ docker compose up --build
 ### Method 2: Local Development
 ```bash
 # 1. Move to the project directory
-cd rag_app
+cd semantic_fashion_search
 
 # 2. Create a virtual environment
 python -m venv .venv
@@ -53,8 +53,8 @@ uvicorn app.main:app --reload
 
 #### Using the Full Dataset
 
-The provided zip archive already includes a 1,000-item sample dataset
-(`sample/sample_1000.json`).  
+The provided zip archive already includes a 5,000-item sample dataset
+(`sample/sample_5000.json`).  
 To use the full dataset, follow these steps:
 
 ```bash

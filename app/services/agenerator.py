@@ -158,6 +158,7 @@ class AsyncGenerator:
             {"role": "user", "content": prompt},
         ]
         try:
+            logger.info(f"Reranking with model: {self.model}")
             r = await self.client.chat.completions.create(
                 model=self.model,
                 messages=msgs,
