@@ -53,8 +53,8 @@ uvicorn app.main:app --reload
 
 #### Using the Full Dataset
 
-The provided zip archive already includes a 5,000-item sample dataset
-(`sample/sample_5000.json`).  
+The provided zip archive already includes a 1,000-item sample dataset
+(`sample/sample_1000.json`).  
 To use the full dataset, follow these steps:
 
 ```bash
@@ -259,7 +259,7 @@ sessions with business teams to drive iterative improvement.
 ### 方法1: Docker（推奨・簡単）
 ```bash
 # 1. プロジェクトディレクトリに移動
-cd rag_app
+cd semantic_fashion_search
 
 # 2. 環境変数設定
 cp .env.sample .env
@@ -273,7 +273,7 @@ docker compose up --build
 ### 方法2: ローカル開発環境
 ```bash
 # 1. プロジェクトディレクトリに移動
-cd rag_app
+cd semantic_fashion_search
 
 # 2. 仮想環境作成
 python -m venv .venv
