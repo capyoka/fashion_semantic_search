@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hybrid Search Demo</title>
+<style>
+  body {
+    background: #0f1115;
+    color: #e2e8f0;
+    font-family: sans-serif;
+    margin: 0;
+    padding: 20px;
+  }
+  h1 { color: #60a5fa; }
+  #searchBox {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #2a2f3a;
+    background: #171923;
+    color: #e2e8f0;
+  }
+  button {
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: none;
+    background: #3b82f6;
+    color: white;
+    cursor: pointer;
+  }
+  button:hover { background: #2563eb; }
+  #results { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 14px; }
+
+  .card {
+    background: #171923;
+    border: 1px solid #2a2f3a;
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .image-scroll {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 6px;
+    background: #111;
+    scrollbar-width: thin;
+  }
+  .image-scroll img {
+    height: 140px;
+    border-radius: 6px;
+    transition: transform .2s;
+  }
+  .image-scroll img:hover { transform: scale(1.1); }
+  .pad { padding: 10px; }
+  .title { font-weight: 700; margin-bottom: 6px; font-size: 15px; line-height: 1.4; }
+  .meta { font-size: 12px; color: #cbd5e1; margin-bottom: 6px; line-height: 1.4; }
+</style>
+</head>
+
+<body>
+  <h1>🛍 Hybrid Fashion Search</h1>
+  <div id="searchBox">
+    <input type="text" id="query" placeholder="e.g. summer beach outfit" />
+    <button onclick="search()">Search</button>
+  </div>
+
+  <div id="results"></div>
+
+  <script>
+    async function search() {
+      const query = document.getElementById("query").value.trim();
+      if (!query) return;
+      const resultsDiv = document.getElementById("results");
+      resultsDiv.innerHTML = "<p>⏳ Searching...</p>";
+
+      try {
+        const res = await fetch("http://127.0.0.1:8000/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: query, top_k: 20 })
+        });
+        const data = await res.json();
+        const items = data.results || [];
+        if (!items.length) {
+          resultsDiv.innerHTML = "<p>😢 No results found.</p>";
+          return;
+        }
+
+        let html = "";
+        for (const x of items) {
+          const title = escapeHTML(x.title || "(no title)");
+          const store = escapeHTML(x.store || "");
+          const price = x.price !== null && x.price !== undefined ? `$${x.price}` : "—";
+          const imgs = (x.images || [])
+            .map(img => `<img src="${escapeHTML(img.hi_res || img.large || img.thumb || "")}" loading="lazy">`)
+            .join("");
+
+          html += `
+            <article class="card">
+              <div class="image-scroll">${imgs}</div>
+              <div class="pad">
+                <div class="title">${title}</div>
+                <div class="meta">
+                  <b>Store:</b> ${store}<br>
+                  <b>Price:</b> ${price}<br>
+                  <b>Rating:</b> ${x.average_rating || "—"} (${x.rating_number || 0} reviews)
+                </div>
+              </div>
+            </article>
+          `;
+        }
+        resultsDiv.innerHTML = html;
+      } catch (err) {
+        console.error(err);
+        resultsDiv.innerHTML = `<p style="color:red;">❌ Error: ${err}</p>`;
+      }
+    }
+
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[c]));
+    }
+  </script>
+</body>
+</html>

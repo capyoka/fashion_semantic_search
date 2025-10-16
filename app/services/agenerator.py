@@ -49,23 +49,6 @@ class AsyncGenerator:
         r = await self.client.chat.completions.create(model=self.model, messages=msgs, temperature=0.0)
         return r.choices[0].message.content.strip()
 
-    # --- BM25用キーワード抽出 ---
-    async def extract_bm25_keywords(
-        self,
-        user_query: str,
-        k_min: int = 3,
-        k_max: int = 10,
-        prompt_template: str = PROMPT_KEYWORDS,
-    ) -> list[str]:
-        prompt = prompt_template.format(user_query=user_query, k_min=k_min, k_max=k_max)
-        msgs = [
-            {"role": "system", "content": "Japanese keyword extractor."},
-            {"role": "user", "content": prompt},
-        ]
-        r = await self.client.chat.completions.create(model=self.model, messages=msgs, temperature=0.0)
-        line = r.choices[0].message.content.strip()
-        return [w.strip() for w in re.split(r"[,\u3001]", line) if w.strip()][:k_max]
-
     # --- LLMリランク ---
     async def rerank(
         self,

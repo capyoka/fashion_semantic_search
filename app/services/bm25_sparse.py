@@ -1,119 +1,137 @@
 """
-bm25_sparse.py
+services/bm25_sparse.py
 
-BM25スコアリングのロジックと、
-Qdrantへの永続化（save/load）機能を統合したモジュール。
+BM25Sparse — インデクサと検索で共通利用できるBM25ユーティリティ。
+・英語前処理（正規化 + トークン化 + 原形化 + stopword除去）
+・idf辞書をQdrantのcollection metadataに保存/復元
 """
 
-from collections import Counter
-import math
+import re
+from typing import List, Dict
 from qdrant_client import QdrantClient, models
+from rank_bm25 import BM25Okapi
+import uuid
 
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+import pathlib
+
+# --- NLTK データパス --- 
+NLTK_PATH = pathlib.Path(__file__).parent.parent.parent / "data" / "nltk_data"
+nltk.data.path.append(str(NLTK_PATH))
 
 class BM25Sparse:
-    """
-    軽量BM25実装（tokenize→df→idf→sparse vector変換）
-    """
+    """BM25 Sparseベクトル化 + Qdrant メタ保存対応（ダミー Point 方式）"""
 
-    def __init__(self, k1: float = 0.9, b: float = 0.4):
-        self.k1 = k1
-        self.b = b
-        self.df = {}       # term -> document frequency
-        self.N = 0         # total number of documents
-        self.avgdl = 0.0   # average document length
-        self.tokenizer_version = "basic_v1"
+    def __init__(self, corpus: List[str] = None):
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words("english"))
+        self.bm25 = None
+        self.vocab: List[str] = []
+        self.token_to_index: dict[str, int] = {}
 
-    # ------------------------
-    # Fitting
-    # ------------------------
-    def fit(self, docs: list[str]):
-        """全文書からdf, N, avgdlを計算"""
-        self.N = len(docs)
-        df_counter = Counter()
-        total_len = 0
+        if corpus:
+            self.fit(corpus)
 
-        for doc in docs:
-            tokens = self._tokenize(doc)
-            total_len += len(tokens)
-            for t in set(tokens):
-                df_counter[t] += 1
+    # —————————————————————
+    # 前処理／トークナイズ
+    # —————————————————————
+    def _preprocess(self, text: str) -> List[str]:
+        """英語テキストの正規化 + トークン化 + 原形化 + stopword 除去"""
+        text = re.sub(r"[^a-zA-Z0-9\s]", " ", text).lower()
+        tokens = word_tokenize(text)
+        clean_tokens = [
+            self.lemmatizer.lemmatize(t)
+            for t in tokens
+            if t not in self.stop_words and len(t) > 1
+        ]
+        return clean_tokens
 
-        self.df = dict(df_counter)
-        self.avgdl = total_len / self.N if self.N else 0
+    def fit(self, corpus: List[str]):
+        """コーパス全体を使って BM25 モデルを構築"""
+        tokenized = [self._preprocess(doc) for doc in corpus]
+        self.bm25 = BM25Okapi(tokenized)
+        # BM25Okapi の idf を語彙とともに保持
+        self.vocab = list(self.bm25.idf.keys())
+        self.token_to_index = {t: i for i, t in enumerate(self.vocab)}
+        return self
 
-    # ------------------------
-    # Query transform
-    # ------------------------
-    def transform_query(self, query: str):
-        """クエリ文字列→(indices, values)"""
-        tokens = self._tokenize(query)
-        tf = Counter(tokens)
-        indices, values = [], []
+    # —————————————————————
+    # 文書／クエリ → 疎ベクトル変換
+    # —————————————————————
+    def transform_doc(self, text: str):
+        """文書→BM25疎ベクトル（重複インデックス統合済み）"""
+        tokens = self._preprocess(text)
+        scores = {}
 
-        for term, f in tf.items():
-            if term not in self.df:
-                continue
-            idf = math.log(1 + (self.N - self.df[term] + 0.5) / (self.df[term] + 0.5))
-            score = idf * (f * (self.k1 + 1)) / (f + self.k1 * (1 - self.b + self.b))
-            indices.append(hash(term) % (2**31))  # ← termのhashをint index化
-            values.append(score)
+        for t in tokens:
+            if t in self.token_to_index:
+                idx = self.token_to_index[t]
+                val = self.bm25.idf.get(t, 0.0)
+                scores[idx] = scores.get(idx, 0.0) + val  # ← ここで統合
+
+        indices = list(scores.keys())
+        values = list(scores.values())
         return indices, values
 
-    def transform_doc(self, doc: str):
-        """文書→(indices, values)"""
-        tokens = self._tokenize(doc)
-        tf = Counter(tokens)
-        indices, values = [], []
+    def transform_query(self, text: str):
+        """クエリ→BM25疎ベクトル（同様に統合）"""
+        return self.transform_doc(text)
 
-        for term, f in tf.items():
-            if term not in self.df:
-                continue
-            idf = math.log(1 + (self.N - self.df[term] + 0.5) / (self.df[term] + 0.5))
-            score = idf * (f * (self.k1 + 1)) / (f + self.k1 * (1 - self.b + self.b))
-            indices.append(hash(term) % (2**31))
-            values.append(score)
-        return indices, values
 
-    # ------------------------
-    # Qdrant persistence
-    # ------------------------
-    def save_to_qdrant(self, qdrant: QdrantClient, collection: str):
-        """BM25メタをQdrantに保存"""
-        meta = {
+    # —————————————————————
+    # Qdrant 永続化：ダミー Point 保存方式
+    # —————————————————————
+    def save_to_qdrant(self, qdrant: QdrantClient, collection_name: str):
+        """BM25 の vocab + idf を Qdrant に保存（ダミー UUID Point）"""
+        if self.bm25 is None:
+            raise ValueError("BM25 model is not fitted; cannot save metadata.")
+
+        payload = {
             "_bm25_meta": True,
-            "N": self.N,
-            "avgdl": self.avgdl,
-            "df": self.df,
-            "tokenizer": self.tokenizer_version,
+            "vocab": self.vocab,
+            "idf": self.bm25.idf,
         }
+
+        # ✅ UUID形式の固定IDを使用（安定的で有効なUUID）
+        bm25_meta_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "bm25_meta"))
+
+        # ✅ ダミーゼロベクトルを追加（pydantic ValidationError 回避）
+        dummy_vector = {"text-dense": [0.0] * 3072}
+
         qdrant.upsert(
-            collection_name=collection,
+            collection_name=collection_name,
             points=[
-                models.PointStruct(id="__bm25_meta__", payload=meta)
+                models.PointStruct(
+                    id=bm25_meta_id,
+                    vector=dummy_vector,
+                    payload=payload,
+                )
             ],
         )
-        print(f"[BM25] Saved to Qdrant: N={self.N}, avgdl={self.avgdl:.2f}, vocab={len(self.df)}")
+        print(f"[BM25] Saved metadata point as UUID={bm25_meta_id} (vocab size={len(self.vocab)})")
 
     @classmethod
-    def load_from_qdrant(cls, qdrant: QdrantClient, collection: str):
-        """QdrantからBM25メタをロード"""
-        pts = qdrant.retrieve(collection_name=collection, ids=["__bm25_meta__"])
-        if not pts or not pts[0].payload.get("_bm25_meta"):
-            raise RuntimeError(f"[BM25] meta not found in collection '{collection}'")
+    def load_from_qdrant(cls, qdrant: QdrantClient, collection_name: str):
+            """Qdrant からダミー Point を読み込み、BM25 モデルを再構築"""
+            # ✅ 保存時と同じ安定UUIDを使用
+            bm25_meta_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "bm25_meta"))
 
-        meta = pts[0].payload
-        bm25 = cls(k1=0.9, b=0.4)
-        bm25.N = meta["N"]
-        bm25.avgdl = meta["avgdl"]
-        bm25.df = {k: int(v) for k, v in meta["df"].items()}
-        bm25.tokenizer_version = meta.get("tokenizer", "basic_v1")
-        print(f"[BM25] Loaded from Qdrant: N={bm25.N}, avgdl={bm25.avgdl:.2f}, vocab={len(bm25.df)}")
-        return bm25
+            pts = qdrant.retrieve(collection_name=collection_name, ids=[bm25_meta_id])
+            if not pts or not pts[0].payload.get("_bm25_meta"):
+                raise RuntimeError(f"[BM25] metadata not found in collection '{collection_name}'")
 
-    # ------------------------
-    # Utilities
-    # ------------------------
-    @staticmethod
-    def _tokenize(text: str):
-        """単純なトークナイザ（英語・ローマ字前提）"""
-        return [t.lower() for t in text.split() if t.strip()]
+            meta = pts[0].payload
+
+            inst = cls()
+            inst.vocab = meta["vocab"]
+            inst.token_to_index = {t: i for i, t in enumerate(inst.vocab)}
+
+            # ✅ 空BM25を作ってidf上書き
+            inst.bm25 = BM25Okapi([["dummy"]])
+            inst.bm25.idf = meta["idf"]
+
+            print(f"[BM25] Loaded metadata from dummy point (UUID={bm25_meta_id}); vocab size={len(inst.vocab)}")
+            return inst

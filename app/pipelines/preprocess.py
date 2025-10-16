@@ -1,56 +1,37 @@
+"""
+pipelines/hybrid_indexer.py
+
+Qdrantに対して Dense（OpenAI Embedding）+ Sparse（BM25）を登録するハイブリッドインデクサ。
+BM25の語彙情報をコレクションmetadataとして保存し、後で検索側で完全復元できる。
+"""
+
 import os
+import re
 import json
 import time
 import uuid
-from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Optional
 
 from tqdm import tqdm
 from qdrant_client import QdrantClient, models
-from rank_bm25 import BM25Okapi
 from openai import OpenAI
+
 from app.core.config import settings
+from app.services.bm25_sparse import BM25Sparse
+
 
 # ============================================================
 # 設定
 # ============================================================
-
 CHAT_MODEL = settings.OPENAI_CHAT_MODEL
-EMBED_MODEL = settings.OPENAI_EMBED_MODEL
-QDRANT_PATH = settings.QDRANT_PATH
+EMBED_MODEL = settings.OPENAI_EMBED_MODEL or "text-embedding-3-large"
+QDRANT_PATH = os.path.abspath(settings.QDRANT_PATH)
 COLLECTION_NAME = settings.QDRANT_COLLECTION
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 
-CAPTION_SYSTEM_PROMPT = """
-You are a factual assistant for e-commerce product images.
-Always write in English.
-Produce concise, objective captions (3–5 sentences).
-Describe only what is visible in the image or explicitly provided in the user prompt.
-Do not speculate about attributes that are not clearly visible or provided.
-For Brand, include it only if it is verifiable from the image (logo/label) or explicitly given in the prompt; otherwise, omit any brand claim.
-Avoid marketing language, opinions, and unverifiable claims.
-Prefer concrete attributes: category, color, material, silhouette/fit, notable details.
-Mention season/occasion/style only if clearly supported by visible cues (coverage, fabric weight, sparkle, etc.).
-"""
-
-CAPTION_USER_PROMPT = """
-Write one concise factual caption (3–5 sentences) for this product image using both the visual content and the context below.
-Do NOT contradict what is visible in the image. If the context mentions attributes that are not visible, include them only if they do not contradict the image.
-Prefer concrete attributes: category, color, material, silhouette/fit, notable details.
-Mention season/occasion/style only if supported by visible cues or explicitly provided.
-For Brand, include it only if it is visible in the image or explicitly present in the context (Title/Store); otherwise, omit any brand claim.
-Keep a neutral, non-marketing tone.
-
-Context:
-Title: {title}
-Store: {store}
-Features: {features}
-"""
-
-CAPTION_MAX_IMAGES_PER_ITEM = 2
 CAPTION_MAX_WORKERS = 6
 EMBED_BATCH_SIZE = 64
-EMBED_MAX_WORKERS = 4
 QDRANT_BATCH_SIZE = 256
 
 
@@ -58,7 +39,7 @@ QDRANT_BATCH_SIZE = 256
 # ユーティリティ
 # ============================================================
 def iter_json(path: str):
-    """JSONL or JSON配列を読み込むジェネレータ"""
+    """JSONL または JSON配列を読み込む"""
     with open(path, "r", encoding="utf-8") as f:
         first = f.read(1)
         f.seek(0)
@@ -77,157 +58,145 @@ def stable_uuid(val: str) -> str:
 
 
 def extract_image_refs(product: Dict) -> List[str]:
-    """画像URLを抽出（最大N件）"""
+    """画像URLを抽出"""
     imgs = product.get("images", [])
     refs = []
-    if isinstance(imgs, list):
-        for img in imgs:
-            if isinstance(img, dict) and "hi_res" in img:
-                refs.append(img["hi_res"])
-            elif isinstance(img, str):
-                refs.append(img)
-    return refs[:CAPTION_MAX_IMAGES_PER_ITEM]
+    for img in imgs:
+        if isinstance(img, dict) and "large" in img:
+            refs.append(img["large"])
+        elif isinstance(img, str):
+            refs.append(img)
+    return refs[:1]
 
 
 # ============================================================
-# 画像キャプション生成
+# キャプション生成
 # ============================================================
-def _caption_worker(image_url: str, title: str, store: str, features: str) -> Optional[str]:
-    """1画像＋文脈でキャプション生成"""
+CAPTION_SYSTEM_PROMPT = """
+You are a factual assistant for e-commerce product images.
+Always write in English.
+Produce concise, objective captions (3–5 sentences).
+Describe only what is visible in the image or explicitly provided in the user prompt.
+Avoid speculation or marketing tone.
+"""
+
+CAPTION_USER_PROMPT = """
+Write one concise factual caption (3–5 sentences) for this product image using both the visual content and the context below.
+Context:
+Title: {title}
+Store: {store}
+Features: {features}
+"""
+
+
+def caption_images(image_urls: List[str], title: str, store: str, features: str) -> Optional[str]:
+    """1商品分のキャプションを生成"""
+    if not image_urls:
+        return None
+
     client = OpenAI(api_key=OPENAI_API_KEY)
     user_prompt = CAPTION_USER_PROMPT.format(
         title=title or "",
         store=store or "",
-        features=features or "None"
+        features=features or "None",
     )
 
-    try:
-        messages = [
-            {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ],
-            },
-        ]
-        r = client.chat.completions.create(
-            model=CHAT_MODEL, messages=messages, temperature=0.2
-        )
-        return r.choices[0].message.content.strip()
-    except Exception:
-        return None
+    messages = [
+        {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls],
+            ],
+        },
+    ]
 
-
-def caption_images_parallel(image_urls: List[str], title: str, store: str, features: str) -> List[str]:
-    """画像＋文脈キャプションを並列生成"""
-    if not image_urls:
-        return []
-    caps = []
-    with ThreadPoolExecutor(max_workers=CAPTION_MAX_WORKERS) as ex:
-        futs = {
-            ex.submit(_caption_worker, url, title, store, features): url
-            for url in image_urls[:CAPTION_MAX_IMAGES_PER_ITEM]
-        }
-        for fut in as_completed(futs):
-            res = fut.result()
-            if res:
-                caps.append(res)
-    return caps
-
-
-# ============================================================
-# BM25 Sparse
-# ============================================================
-class BM25Sparse:
-    def __init__(self, corpus: List[str]):
-        self.tokenized = [doc.split() for doc in corpus]
-        self.bm25 = BM25Okapi(self.tokenized)
-
-    def transform_doc(self, text: str):
-        tokens = text.split()
-        scores = {t: self.bm25.idf.get(t, 0.0) for t in tokens}
-        idx = list(range(len(scores)))
-        vals = list(scores.values())
-        return idx, vals
+    for attempt in range(3):
+        try:
+            r = client.chat.completions.create(model=CHAT_MODEL, messages=messages, temperature=0.2)
+            return r.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"❌ Caption generation failed ({attempt+1}/3): {e}")
+            time.sleep(3)
+    return None
 
 
 # ============================================================
 # Embedding
 # ============================================================
 def embed_parallel(texts: List[str], model_name: str = EMBED_MODEL) -> List[List[float]]:
+    """OpenAI埋め込みをバッチ生成"""
     client = OpenAI(api_key=OPENAI_API_KEY)
-    if not texts:
-        return []
     vectors = []
     for i in tqdm(range(0, len(texts), EMBED_BATCH_SIZE), desc="embedding"):
         batch = texts[i : i + EMBED_BATCH_SIZE]
-        r = client.embeddings.create(model=model_name, input=batch)
-        vectors.extend([d.embedding for d in r.data])
+        try:
+            r = client.embeddings.create(model=model_name, input=batch)
+            vectors.extend([d.embedding for d in r.data])
+        except Exception as e:
+            print(f"❌ Embedding failed at batch {i}: {e}")
+            time.sleep(5)
     return vectors
 
 
 # ============================================================
-# メイン処理：JSON → Qdrant (dense + sparse + raw data)
+# メイン処理
 # ============================================================
+# ------------------------------------------------------------
+# メイン処理：JSON → Qdrant (dense + sparse + payload + BM25 meta)
 def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     os.makedirs(qdrant_path, exist_ok=True)
     qdrant = QdrantClient(path=qdrant_path)
 
-    all_texts = []   # 検索用テキスト
-    payloads = []    # Qdrantに格納する全情報
+    products = list(iter_json(input_path))
+    all_texts = []
+    payloads = []
 
-    # --- Step 1: 元データ処理 + キャプション生成 ---
-    for prod in tqdm(iter_json(input_path), desc="process"):
-        pid = prod.get("parent_asin") or prod.get("asin") or stable_uuid(json.dumps(prod))
+    # キャプション生成（並列化）
+    def process_prod(prod):
+        pid = prod.get("asin") or stable_uuid(json.dumps(prod))
         title = prod.get("title", "")
         store = prod.get("store", "")
         features = "; ".join(prod.get("features", []))
         images = extract_image_refs(prod)
+        caption = caption_images(images, title, store, features)
+        search_text = " ".join([title, features, caption or ""]).strip()
+        payload = {**prod, "_id": pid, "_caption": caption, "_search_text": search_text}
+        return payload, search_text
 
-        captions = caption_images_parallel(images, title, store, features)
-        caption_text = " ".join(captions)
+    print(f"🧠 Generating captions in parallel ({CAPTION_MAX_WORKERS} workers)...")
+    with ThreadPoolExecutor(max_workers=CAPTION_MAX_WORKERS) as executor:
+        futures = [executor.submit(process_prod, p) for p in products]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="caption"):
+            payload, text = fut.result()
+            payloads.append(payload)
+            all_texts.append(text)
 
-        # 🔹 検索用テキスト（title + features + captions）
-        search_text = " ".join([
-            title or "",
-            features or "",
-            caption_text or ""
-        ]).strip()
-
-        # 🔹 payloadには「元データ + 拡張情報」をすべて格納
-        payload = {
-            **prod,                      # 元データ構造をそのまま保持
-            "_id": pid,                  # 安定UUID
-            "_captions": captions,       # LLM生成キャプション
-            "_search_text": search_text  # 検索対象テキスト
-        }
-        payloads.append(payload)
-        all_texts.append(search_text)
-
-    # --- Step 2: Dense Embedding ---
+    # Dense embedding
     dense = embed_parallel(all_texts, EMBED_MODEL)
 
-    # --- Step 3: Sparse (BM25) ---
+    # BM25 モデル作成
     bm25 = BM25Sparse(all_texts)
 
-    # --- Step 4: Qdrant コレクション作成 ---
+    # Qdrant コレクション作成（dense + sparse）
     dim = len(dense[0])
     qdrant.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config={
-            "text-dense": models.VectorParams(size=dim, distance=models.Distance.COSINE),
+            "text-dense": models.VectorParams(size=dim, distance=models.Distance.COSINE)
         },
         sparse_vectors_config={
             "text-sparse": models.SparseVectorParams()
         }
     )
 
+    # BM25 メタ保存（ダミー Point）
+    bm25.save_to_qdrant(qdrant, COLLECTION_NAME)
 
-    # --- Step 5: Upsert (dense + sparse + payload) ---
+    # 各商品 upsert
     points = []
-    for i, (vec, text, payload) in enumerate(zip(dense, all_texts, payloads)):
+    for vec, text, payload in zip(dense, all_texts, payloads):
         idx, vals = bm25.transform_doc(text)
         uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(payload["_id"])))
         points.append(
@@ -240,6 +209,10 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
                 payload=payload,
             )
         )
+        if len(points) >= QDRANT_BATCH_SIZE:
+            qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+            points.clear()
+    if points:
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
 
-    qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-    print(f"✅ Hybrid Qdrant built with {len(points)} items.")
+    print(f"✅ Hybrid index built: {len(payloads)} points (BM25 meta included)")

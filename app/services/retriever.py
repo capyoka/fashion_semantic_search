@@ -1,88 +1,84 @@
 from qdrant_client import QdrantClient, models
-import numpy as np
+from openai import OpenAI
+from app.services.bm25_sparse import BM25Sparse  # 同じモジュール
+import re
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+import time
+from app.core.config import settings
 
 
 class HybridRetriever:
-    """
-    QdrantのRRF融合（dense + BM25 sparse）を使うHybrid Retriever。
-    """
-
-    def __init__(
-        self,
-        qdrant: QdrantClient,
-        collection: str,
-        bm25_indexer=None,
-        auto_load_bm25: bool = True,
-    ):
-        """
-        Args:
-            qdrant: QdrantClient (例: QdrantClient("http://qdrant:6333"))
-            collection: コレクション名
-            bm25_indexer: 既存のBM25Sparseインスタンス（指定しない場合はQdrantからロード）
-            auto_load_bm25: Trueなら自動でQdrantからBM25メタをロード
-        """
+    def __init__(self, qdrant: QdrantClient, collection: str, bm25_indexer: BM25Sparse = None, auto_load: bool = True):
         self.qdrant = qdrant
         self.collection = collection
         self.bm25 = bm25_indexer
+        self.openai = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-        if self.bm25 is None and auto_load_bm25:
-            print(f"[Init] Loading BM25 metadata for collection '{collection}' ...")
+        if self.bm25 is None and auto_load:
+            self.bm25 = BM25Sparse.load_from_qdrant(qdrant, collection)
+            if self.bm25:
+                print("[HybridRetriever] Loaded BM25 metadata")
+            else:
+                print("[HybridRetriever] Warning: BM25 metadata not found; dense-only")
+
+    def embed_query(self, query: str):
+        clean = self._preprocess(query)
+        for attempt in range(3):
             try:
-                self.bm25 = load_bm25_from_qdrant(collection)
-                print("[Init] BM25 loaded successfully.")
+                r = self.openai.embeddings.create(model=settings.OPENAI_EMBED_MODEL, input=clean)
+                return clean, r.data[0].embedding
             except Exception as e:
-                print(f"[Warn] Failed to load BM25 from Qdrant: {e}")
-                self.bm25 = None  # dense-only fallback可能に
+                print(f"Embedding failed ({attempt+1}): {e}")
+                time.sleep(2)
+        raise RuntimeError("Embedding failed")
 
-    # ---------------------------
-    # 検索メイン関数
-    # ---------------------------
-    def search(
-        self,
-        query: str,
-        qvec: list[float],
-        top_k: int = 5,
-        prefetch_k: int = 50,
-    ):
-        """
-        Dense + Sparse のハイブリッド検索（Qdrant内RRF融合）
+    def _preprocess(self, text: str) -> str:
+        text = re.sub(r"[^a-zA-Z0-9\s]", " ", text).lower()
+        tokens = word_tokenize(text)
+        lem = WordNetLemmatizer()
+        stp = set(stopwords.words("english"))
+        clean = [lem.lemmatize(t) for t in tokens if t not in stp and len(t) > 1]
+        return " ".join(clean)
 
-        Args:
-            query: ユーザクエリ
-            qvec: OpenAI埋め込みベクトル（例: text-embedding-3-large）
-            top_k: 取得件数
-            prefetch_k: dense/sparseそれぞれがfusion前に取得する候補数
-        """
-        # --- Sparse（BM25） ---
+    def search(self, query: str, qvec: list[float], top_k: int = 5, prefetch_k: int = 50):
+        # BM25 sparse vector
+        sparse_pref = None
         if self.bm25:
             q_idx, q_vals = self.bm25.transform_query(query)
-            sparse_prefetch = models.Prefetch(
+            sparse_pref = models.Prefetch(
                 query=models.SparseVector(indices=q_idx, values=q_vals),
                 using="text-sparse",
-                limit=prefetch_k,
+                limit=prefetch_k
             )
-        else:
-            sparse_prefetch = None
-            print("[Warn] BM25 indexer unavailable. Using dense-only search.")
 
-        # --- Dense ---
-        dense_prefetch = models.Prefetch(
+        dense_pref = models.Prefetch(
             query=qvec,
             using="text-dense",
-            limit=prefetch_k,
+            limit=prefetch_k
         )
 
-        # --- Qdrant内RRF融合検索 ---
-        prefetch_list = [dense_prefetch]
-        if sparse_prefetch:
-            prefetch_list.insert(0, sparse_prefetch)
+        prefetchs = [dense_pref]
+        if sparse_pref:
+            prefetchs.insert(0, sparse_pref)
 
         res = self.qdrant.query_points(
             collection_name=self.collection,
-            prefetch=prefetch_list,
+            prefetch=prefetchs,
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             with_payload=True,
-            limit=top_k,
+            limit=top_k + 1  # 余裕を持たせてメタ除外を見越す
         )
 
-        return res.points
+        # 結果整形／メタ除外
+        docs = []
+        for p in res.points:
+            if p.id == "__bm25_meta__":
+                continue
+            docs.append({
+                "id": p.id,
+                "score": p.score,
+                **p.payload
+            })
+        return docs
