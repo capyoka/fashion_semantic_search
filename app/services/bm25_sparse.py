@@ -6,17 +6,21 @@ BM25Sparse — インデクサと検索で共通利用できるBM25ユーティ�
 ・idf辞書をQdrantのcollection metadataに保存/復元
 """
 
+import logging
 import re
+import uuid
+import pathlib
 from typing import List, Dict
 from qdrant_client import QdrantClient, models
 from rank_bm25 import BM25Okapi
-import uuid
 
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords
-import pathlib
+
+# Logger設定
+logger = logging.getLogger(__name__)
 
 # --- NLTK データパス --- 
 NLTK_PATH = pathlib.Path(__file__).parent.parent.parent / "data" / "nltk_data"
@@ -51,11 +55,13 @@ class BM25Sparse:
 
     def fit(self, corpus: List[str]):
         """コーパス全体を使って BM25 モデルを構築"""
+        logger.info(f"Fitting BM25 model with {len(corpus)} documents")
         tokenized = [self._preprocess(doc) for doc in corpus]
         self.bm25 = BM25Okapi(tokenized)
         # BM25Okapi の idf を語彙とともに保持
         self.vocab = list(self.bm25.idf.keys())
         self.token_to_index = {t: i for i, t in enumerate(self.vocab)}
+        logger.info(f"BM25 model fitted: vocabulary size = {len(self.vocab)}")
         return self
 
     # —————————————————————
@@ -111,7 +117,7 @@ class BM25Sparse:
                 )
             ],
         )
-        print(f"[BM25] Saved metadata point as UUID={bm25_meta_id} (vocab size={len(self.vocab)})")
+        logger.info(f"Saved BM25 metadata point as UUID={bm25_meta_id} (vocab size={len(self.vocab)})")
 
     @classmethod
     def load_from_qdrant(cls, qdrant: QdrantClient, collection_name: str):
@@ -121,7 +127,8 @@ class BM25Sparse:
 
             pts = qdrant.retrieve(collection_name=collection_name, ids=[bm25_meta_id])
             if not pts or not pts[0].payload.get("_bm25_meta"):
-                raise RuntimeError(f"[BM25] metadata not found in collection '{collection_name}'")
+                logger.error(f"BM25 metadata not found in collection '{collection_name}'")
+                raise RuntimeError(f"BM25 metadata not found in collection '{collection_name}'")
 
             meta = pts[0].payload
 
@@ -133,5 +140,5 @@ class BM25Sparse:
             inst.bm25 = BM25Okapi([["dummy"]])
             inst.bm25.idf = meta["idf"]
 
-            print(f"[BM25] Loaded metadata from dummy point (UUID={bm25_meta_id}); vocab size={len(inst.vocab)}")
+            logger.info(f"Loaded BM25 metadata from dummy point (UUID={bm25_meta_id}); vocab size={len(inst.vocab)}")
             return inst

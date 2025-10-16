@@ -11,6 +11,7 @@ import json
 import time
 import uuid
 import random
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 
@@ -35,6 +36,13 @@ OPENAI_API_KEY = settings.OPENAI_API_KEY
 CAPTION_MAX_WORKERS = 5
 EMBED_BATCH_SIZE = 64
 QDRANT_BATCH_SIZE = 256
+
+# Logger設定
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 
 # ============================================================
@@ -196,18 +204,18 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
         except RateLimitError as e:
             # ✅ レート制限時：指数バックオフ＋ランダムスリープ
             wait = min(30, 2 ** attempt + random.uniform(0, 3))
-            print(f"RateLimitError: retrying in {wait:.1f}s ({attempt+1}/{MAX_RETRIES})")
+            logger.warning(f"RateLimitError: retrying in {wait:.1f}s ({attempt+1}/{MAX_RETRIES})")
             time.sleep(wait)
         except APIError as e:
             # ✅ APIエラー（5xx系）：指数バックオフで再試行
             wait = min(20, 2 ** attempt)
-            print(f"APIError: {e}. retrying in {wait}s")
+            logger.warning(f"APIError: {e}. retrying in {wait}s")
             time.sleep(wait)
         except Exception as e:
             # その他エラーは1回だけ待って続行
-            print(f"Caption generation failed ({attempt+1}/{MAX_RETRIES}): {e}")
+            logger.error(f"Caption generation failed ({attempt+1}/{MAX_RETRIES}): {e}")
             time.sleep(3)
-    print("Caption generation failed after maximum retries.")
+    logger.error("Caption generation failed after maximum retries.")
     return None
 
 
@@ -224,7 +232,7 @@ def embed_parallel(texts: List[str], model_name: str = EMBED_MODEL) -> List[List
             r = client.embeddings.create(model=model_name, input=batch)
             vectors.extend([d.embedding for d in r.data])
         except Exception as e:
-            print(f"Embedding failed at batch {i}: {e}")
+            logger.error(f"Embedding failed at batch {i}: {e}")
             time.sleep(5)
     return vectors
 
@@ -254,7 +262,7 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
         payload = {**prod, "_id": pid, "_caption": caption, "_search_text": search_text}
         return payload, search_text
 
-    print(f"Generating captions in parallel ({CAPTION_MAX_WORKERS} workers)...")
+    logger.info(f"Generating captions in parallel ({CAPTION_MAX_WORKERS} workers)...")
     with ThreadPoolExecutor(max_workers=CAPTION_MAX_WORKERS) as executor:
         futures = [executor.submit(process_prod, p) for p in products]
         for fut in tqdm(as_completed(futures), total=len(futures), desc="caption"):
@@ -304,4 +312,4 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     if points:
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
 
-    print(f"✅ Hybrid index built: {len(payloads)} points (BM25 meta included)")
+    logger.info(f"Hybrid index built: {len(payloads)} points (BM25 meta included)")

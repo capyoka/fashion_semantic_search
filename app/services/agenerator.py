@@ -1,6 +1,10 @@
+import logging
 from typing import List
 import os, json, re, ast
 from openai import AsyncOpenAI
+
+# Logger設定
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # ✳️ 外部で定義できるプロンプト群
@@ -66,19 +70,39 @@ class AsyncGenerator:
 
     # --- クエリ書き換え ---
     async def rewrite_query(self, user_query: str, prompt_template: str = PROMPT_REWRITE) -> str:
+        logger.info(f"🔄 Starting query rewrite for: '{user_query}'")
+        logger.debug(f"Using model: {self.fast_model if self.fast_model else self.model}")
+        
         prompt = prompt_template.format(user_query=user_query)
         msgs = [
             {"role": "system", "content": "Japanese concise query rewriter."},
             {"role": "user", "content": prompt},
         ]
-        r = await self.client.chat.completions.create(
-            model=self.fast_model if self.fast_model else self.model,
-            messages=msgs,
-            response_format={"type": "json_object"},
-        )
-        res = r.choices[0].message.content
-        result = ast.literal_eval(res)
-        return result["semantic_query"], result["bm25_query"]
+        
+        try:
+            r = await self.client.chat.completions.create(
+                model=self.fast_model if self.fast_model else self.model,
+                messages=msgs,
+                response_format={"type": "json_object"},
+            )
+            res = r.choices[0].message.content
+            logger.debug(f"Raw LLM response: {res}")
+            
+            result = ast.literal_eval(res)
+            semantic_query = result["semantic_query"]
+            bm25_query = result["bm25_query"]
+            
+            logger.info(f"✅ Query rewrite successful:")
+            logger.info(f"   Original: '{user_query}'")
+            logger.info(f"   Semantic: '{semantic_query}'")
+            logger.info(f"   BM25: '{bm25_query}'")
+            
+            return semantic_query, bm25_query
+        except Exception as e:
+            logger.error(f"❌ Query rewrite failed: {e}")
+            logger.error(f"   Input query: '{user_query}'")
+            logger.error(f"   Model: {self.fast_model if self.fast_model else self.model}")
+            raise
 
     # --- LLMリランク ---
     async def rerank(
@@ -87,27 +111,34 @@ class AsyncGenerator:
         items: List[str],
         prompt_template: str = PROMPT_RERANK,
     ) -> list[int]:
+        logger.debug(f"Reranking {len(items)} items for query: '{user_query}'")
         enumerated = "\n".join([f"[{i}] {t}" for i, t in enumerate(items)])
         prompt = prompt_template.format(user_query=user_query, enumerated=enumerated)
         msgs = [
             {"role": "system", "content": "You are a ranking model. Return only a JSON array of integers."},
             {"role": "user", "content": prompt},
         ]
-        r = await self.client.chat.completions.create(
-            model=self.model,
-            messages=msgs,
-            reasoning_effort="minimal",
-            verbosity="low",
-        )
-        text = r.choices[0].message.content.strip()
-
-        # JSONパース（壊れていたらフォールバック）
         try:
-            arr = json.loads(text)
-            if isinstance(arr, list) and all(isinstance(x, int) for x in arr):
-                return arr
-        except Exception:
-            pass
+            r = await self.client.chat.completions.create(
+                model=self.model,
+                messages=msgs,
+                reasoning_effort="minimal",
+                verbosity="low",
+            )
+            text = r.choices[0].message.content.strip()
 
-        # 壊れていたらデフォルト順
-        return list(range(len(items)))
+            # JSONパース（壊れていたらフォールバック）
+            try:
+                arr = json.loads(text)
+                if isinstance(arr, list) and all(isinstance(x, int) for x in arr):
+                    logger.debug(f"Reranking successful: {len(arr)} items ranked")
+                    return arr
+            except Exception as e:
+                logger.warning(f"Failed to parse rerank result: {e}")
+
+            # 壊れていたらデフォルト順
+            logger.warning("Rerank failed, using default order")
+            return list(range(len(items)))
+        except Exception as e:
+            logger.error(f"Rerank request failed: {e}")
+            return list(range(len(items)))
