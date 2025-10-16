@@ -9,7 +9,7 @@ from nltk.stem import WordNetLemmatizer
 from nltk.corpus import stopwords
 from app.core.config import settings
 
-# Logger設定
+# Logger configuration
 logger = logging.getLogger(__name__)
 
 
@@ -88,14 +88,14 @@ class HybridRetriever:
                 prefetch=prefetchs,
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 with_payload=True,
-                limit=top_k + 1  # 余裕を持たせてメタ除外を見越す
+                limit=top_k + 1  # Allow margin for metadata exclusion
             )
             logger.debug(f"Qdrant returned {len(res.points)} points")
         except Exception as e:
             logger.error(f"❌ Qdrant query failed: {e}")
             raise
 
-        # 結果整形／メタ除外
+        # Result formatting / metadata exclusion
         docs = []
         metadata_count = 0
         for p in res.points:
@@ -113,7 +113,7 @@ class HybridRetriever:
         
         logger.info(f"✅ Hybrid search completed: {len(docs)} documents found")
         
-        # スコア分布のログ（デバッグレベル）
+        # Score distribution logging (debug level)
         if logger.isEnabledFor(logging.DEBUG) and docs:
             scores = [doc.get('score', 0) for doc in docs]
             logger.debug(f"Score range: {min(scores):.4f} - {max(scores):.4f}")

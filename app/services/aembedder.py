@@ -3,7 +3,7 @@ from typing import List
 import os
 from openai import AsyncOpenAI
 
-# Logger設定
+# Logger configuration
 logger = logging.getLogger(__name__)
 
 class AsyncEmbedder:
@@ -20,9 +20,9 @@ class AsyncEmbedder:
         logger.info(f"   Model: {self.model}")
         logger.info(f"   Text count: {len(texts)}")
         
-        # テキストの詳細ログ（デバッグレベル）
+        # Detailed text logging (debug level)
         if logger.isEnabledFor(logging.DEBUG):
-            for i, text in enumerate(texts[:3]):  # 最初の3件のみ
+            for i, text in enumerate(texts[:3]):  # First 3 only
                 logger.debug(f"Text {i+1}: '{text[:100]}{'...' if len(text) > 100 else ''}'")
         
         try:
@@ -32,7 +32,7 @@ class AsyncEmbedder:
             logger.info(f"✅ Embedding successful: {len(vectors)} vectors generated")
             logger.debug(f"Vector dimension: {len(vectors[0]) if vectors else 'N/A'}")
             
-            # ベクトルの統計情報（デバッグレベル）
+            # Vector statistics (debug level)
             if logger.isEnabledFor(logging.DEBUG) and vectors:
                 import numpy as np
                 all_values = np.concatenate(vectors)

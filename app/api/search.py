@@ -11,35 +11,35 @@ from app.services.retriever import HybridRetriever
 from app.services.bm25_sparse import BM25Sparse
 from qdrant_client import QdrantClient
 
-# Logger設定
+# Logger configuration
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["rag"])
 
 # ============================================================
-# 初期化：クライアント・Retriever 準備
+# Initialization: Client and Retriever setup
 # ============================================================
 
-# 非同期 LLM クライアント
+# Async LLM client
 _gen = AsyncGenerator(settings.OPENAI_CHAT_MODEL, settings.OPENAI_CHAT_FAST_MODEL)
 _embed = AsyncEmbedder(settings.OPENAI_EMBED_MODEL)
 
-# Qdrant（ローカル or Remote）
+# Qdrant (local or remote)
 _qdr = QdrantClient(path=settings.QDRANT_PATH)
 
-# BM25 メタデータ読み込み
+# Load BM25 metadata
 _bm25 = BM25Sparse.load_from_qdrant(_qdr, settings.QDRANT_COLLECTION)
 
-# Retriever 準備
+# Prepare retriever
 _ret = HybridRetriever(_qdr, settings.QDRANT_COLLECTION, bm25_indexer=_bm25)
 
 # ============================================================
-# 検索エンドポイント
+# Search endpoint
 # ============================================================
 @router.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest, resp: Response):
     """
-    ハイブリッド検索 (dense + sparse RRF融合) + LLMリランク
+    Hybrid search (dense + sparse RRF fusion) + LLM reranking
     """
     start_time = time.time()
     user_q = (req.query or "").strip()
@@ -48,7 +48,7 @@ async def search(req: SearchRequest, resp: Response):
     logger.info(f"🔍 Search request started - Query: '{user_q}', Top-K: {top_k}")
     logger.debug(f"Request details - User-Agent: {req.__dict__}")
 
-    # 1️.クエリ書き換え（rewrite のみ実行）
+    # 1. Query rewriting (rewrite only)
     query_start = time.time()
     logger.info("📝 Step 1: Starting query rewrite...")
     try:
@@ -64,7 +64,7 @@ async def search(req: SearchRequest, resp: Response):
         logger.error(f"❌ Query rewrite failed: {e}")
         rewritten, keywords = user_q, user_q
 
-    # 2️.埋め込み生成（非同期）
+    # 2. Embedding generation (async)
     embed_start = time.time()
     logger.info("🧠 Step 2: Generating embeddings...")
     try:
@@ -75,7 +75,7 @@ async def search(req: SearchRequest, resp: Response):
         logger.error(f"❌ Embedding generation failed: {e}")
         raise
 
-    # 3️.ハイブリッド検索（同期Qdrant → スレッド実行）
+    # 3. Hybrid search (sync Qdrant → thread execution)
     search_start = time.time()
     logger.info("🔎 Step 3: Performing hybrid search...")
     try:
@@ -86,7 +86,7 @@ async def search(req: SearchRequest, resp: Response):
         logger.error(f"❌ Hybrid search failed: {e}")
         raise
 
-    # BM25メタデータPoint（__bm25_meta__）を除外
+    # Exclude BM25 metadata points (__bm25_meta__)
     original_count = len(docs)
     docs = [d for d in docs if not d.get("_bm25_meta")]
     filtered_count = len(docs)
@@ -100,7 +100,7 @@ async def search(req: SearchRequest, resp: Response):
         logger.warning(f"⚠️ No documents found for query. Total time: {total_time:.3f}s")
         return {"results": []}
 
-    # 4️.LLM リランク（非同期・安全化）
+    # 4. LLM reranking (async, safe)
     rerank_start = time.time()
     logger.info("🔄 Step 4: Starting LLM reranking...")
     try:
@@ -117,16 +117,16 @@ async def search(req: SearchRequest, resp: Response):
         logger.info("Using original search order as fallback")
         docs_r = docs
 
-    # 5.上位 top_k 結果を返す
+    # 5. Return top_k results
     final_results = docs_r[:top_k]
     total_time = time.time() - start_time
     
     logger.info(f"🎯 Step 5: Returning {len(final_results)} final results")
     logger.info(f"⏱️ Total search time: {total_time:.3f}s")
     
-    # 結果の詳細ログ（デバッグレベル）
+    # Detailed result logging (debug level)
     if logger.isEnabledFor(logging.DEBUG):
-        for i, doc in enumerate(final_results[:3]):  # 上位3件のみ
+        for i, doc in enumerate(final_results[:3]):  # Top 3 only
             logger.debug(f"Result {i+1}: ID={doc.get('id', 'N/A')}, Score={doc.get('score', 'N/A'):.4f}")
             logger.debug(f"  Title: {doc.get('title', 'N/A')[:100]}...")
     

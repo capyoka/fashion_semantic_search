@@ -1,8 +1,8 @@
 """
 pipelines/hybrid_indexer.py
 
-Qdrantに対して Dense（OpenAI Embedding）+ Sparse（BM25）を登録するハイブリッドインデクサ。
-BM25の語彙情報をコレクションmetadataとして保存し、後で検索側で完全復元できる。
+Hybrid indexer that registers Dense (OpenAI Embedding) + Sparse (BM25) to Qdrant.
+Saves BM25 vocabulary information as collection metadata for complete restoration on search side.
 """
 
 import os
@@ -25,7 +25,7 @@ from app.services.bm25_sparse import BM25Sparse
 
 
 # ============================================================
-# 設定
+# Configuration
 # ============================================================
 CHAT_MODEL = settings.OPENAI_CHAT_MODEL
 EMBED_MODEL = settings.OPENAI_EMBED_MODEL
@@ -37,7 +37,7 @@ CAPTION_MAX_WORKERS = 5
 EMBED_BATCH_SIZE = 64
 QDRANT_BATCH_SIZE = 256
 
-# Logger設定
+# Logger configuration
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
@@ -46,10 +46,10 @@ logging.basicConfig(
 
 
 # ============================================================
-# ユーティリティ
+# Utilities
 # ============================================================
 def iter_json(path: str):
-    """JSONL または JSON配列を読み込む"""
+    """Load JSONL or JSON array"""
     with open(path, "r", encoding="utf-8") as f:
         first = f.read(1)
         f.seek(0)
@@ -63,12 +63,12 @@ def iter_json(path: str):
 
 
 def stable_uuid(val: str) -> str:
-    """文字列から安定的なUUIDを生成"""
+    """Generate stable UUID from string"""
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, val))
 
 
 def extract_image_refs(product: Dict) -> List[str]:
-    """画像URLを抽出"""
+    """Extract image URLs"""
     imgs = product.get("images", [])
     refs = []
     for img in imgs:
@@ -80,7 +80,7 @@ def extract_image_refs(product: Dict) -> List[str]:
 
 
 # ============================================================
-# キャプション生成
+# Caption generation
 # ============================================================
 
 CAPTION_SYSTEM_PROMPT = """
@@ -163,7 +163,7 @@ Output only the caption text.
 
 
 def caption_images(image_urls: List[str], title: str, store: str, features: str) -> Optional[str]:
-    """1商品分のキャプションを生成（堅牢なリトライ付き）"""
+    """Generate caption for one product (with robust retry)"""
     if not image_urls:
         return None
 
@@ -174,7 +174,7 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
         features=features or "None",
     )
 
-    # 画像は1枚ずつ送る想定
+    # Send one image at a time
     messages = [
         {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
         {
@@ -194,7 +194,7 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
             r = client.chat.completions.create(
                 model=CHAT_MODEL,
                 messages=messages,
-                timeout=60,  # 念のためタイムアウト指定
+                timeout=60,  # Timeout specification for safety
                 reasoning_effort="minimal",
                 verbosity="low",
             )
@@ -202,17 +202,17 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
             return caption
 
         except RateLimitError as e:
-            # ✅ レート制限時：指数バックオフ＋ランダムスリープ
+            # Rate limit: exponential backoff + random sleep
             wait = min(30, 2 ** attempt + random.uniform(0, 3))
             logger.warning(f"RateLimitError: retrying in {wait:.1f}s ({attempt+1}/{MAX_RETRIES})")
             time.sleep(wait)
         except APIError as e:
-            # ✅ APIエラー（5xx系）：指数バックオフで再試行
+            # API error (5xx): retry with exponential backoff
             wait = min(20, 2 ** attempt)
             logger.warning(f"APIError: {e}. retrying in {wait}s")
             time.sleep(wait)
         except Exception as e:
-            # その他エラーは1回だけ待って続行
+            # Other errors: wait once and continue
             logger.error(f"Caption generation failed ({attempt+1}/{MAX_RETRIES}): {e}")
             time.sleep(3)
     logger.error("Caption generation failed after maximum retries.")
@@ -223,7 +223,7 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
 # Embedding
 # ============================================================
 def embed_parallel(texts: List[str], model_name: str = EMBED_MODEL) -> List[List[float]]:
-    """OpenAI埋め込みをバッチ生成"""
+    """Generate OpenAI embeddings in batches"""
     client = OpenAI(api_key=OPENAI_API_KEY)
     vectors = []
     for i in tqdm(range(0, len(texts), EMBED_BATCH_SIZE), desc="embedding"):
@@ -238,10 +238,10 @@ def embed_parallel(texts: List[str], model_name: str = EMBED_MODEL) -> List[List
 
 
 # ============================================================
-# メイン処理
+# Main processing
 # ============================================================
 # ------------------------------------------------------------
-# メイン処理：JSON → Qdrant (dense + sparse + payload + BM25 meta)
+# Main processing: JSON → Qdrant (dense + sparse + payload + BM25 meta)
 def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     os.makedirs(qdrant_path, exist_ok=True)
     qdrant = QdrantClient(path=qdrant_path)
@@ -250,7 +250,7 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     all_texts = []
     payloads = []
 
-    # キャプション生成（並列化）
+    # Caption generation (parallelized)
     def process_prod(prod):
         pid = prod.get("asin") or stable_uuid(json.dumps(prod))
         title = prod.get("title", "")
@@ -273,10 +273,10 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
     # Dense embedding
     dense = embed_parallel(all_texts, EMBED_MODEL)
 
-    # BM25 モデル作成
+    # Create BM25 model
     bm25 = BM25Sparse(all_texts)
 
-    # Qdrant コレクション作成（dense + sparse）
+    # Create Qdrant collection (dense + sparse)
     dim = len(dense[0])
     qdrant.recreate_collection(
         collection_name=COLLECTION_NAME,
@@ -288,10 +288,10 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
         }
     )
 
-    # BM25 メタ保存（ダミー Point）
+    # Save BM25 metadata (dummy Point)
     bm25.save_to_qdrant(qdrant, COLLECTION_NAME)
 
-    # 各商品 upsert
+    # Upsert each product
     points = []
     for vec, text, payload in zip(dense, all_texts, payloads):
         idx, vals = bm25.transform_doc(text)

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.search import router as search_router
 
-# Logger設定
+# Logger configuration
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
@@ -14,22 +14,22 @@ logging.basicConfig(
 
 app = FastAPI(title="Hybrid Fashion Search API")
 
-# CORS（ブラウザからのfetchを許可）
+# CORS (allow browser fetch requests)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本番ではドメイン指定推奨
+    allow_origins=["*"],  # Specify domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ search API ルーターを登録
+# Register search API router
 app.include_router(search_router)
 
-# ✅ static フォルダをマウント（例: ./static/）
+# Mount static folder (e.g., ./static/)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ✅ トップページで簡易UIを返す
+# Return simple UI on top page
 @app.get("/")
 async def root():
     logger.info("Root endpoint accessed")

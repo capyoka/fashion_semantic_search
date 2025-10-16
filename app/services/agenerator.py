@@ -16,44 +16,83 @@ SYSTEM_PROMPT_BASE = """
 You are a helpful assistant. Answer concisely in Japanese.
 """
 
-PROMPT_REWRITE =  """
-あなたはファッション商品の検索支援アシスタントです。
-ユーザが入力した自然文の検索クエリを、検索システムで扱いやすい2種類の英語クエリに変換してください。
+PROMPT_REWRITE = """
+You are an assistant that helps refine fashion product search queries.  
+Convert the user's natural-language search query into **two types of English queries** that are optimized for the search system.
 
-目的：
-1. ベクトル検索（semantic search）に適した自然な英文フレーズ（semantic_query）
-2. 単語検索（BM25）に適した主要キーワードの列（bm25_query）
+### Objective:
+1. **semantic_query** — a natural, concise English phrase suitable for vector-based semantic search.  
+2. **bm25_query** — a space-separated list of key English keywords suitable for keyword-based (BM25) search.
 
-ルール：
-- 出力は英語のJSON形式で行う。
-- semantic_query は1文または1フレーズで、自然言語に近いが簡潔な検索文にする。
-- bm25_query はスペース区切りの主要キーワード群にする。
-- ユーザが明示していない属性（素材、色、用途など）を推測して追加しない。
-- 主観的な表現（かわいい、写真映え、人気など）は、見た目や用途に基づく中立的な表現へ置き換える。
-  例：「かわいい服」→「stylish outfit」, 「写真映え」→「bright and eye-catching」
-- 検索語として有効な要素（カテゴリ、用途、季節、色、素材、スタイル、オケージョンなど）を中心に構成する。
-- 出力形式は必ず以下の要素を持つJSON形式に従う：
+### Rules:
+- Output must be in **JSON format**.
+- The `semantic_query` should be one short sentence or phrase that reads naturally but remains concise.  
+- The `bm25_query` should be a space-separated list of core keywords.  
+- Do **not** infer or add any attributes (such as material, color, or purpose) that the user did not explicitly mention.  
+- Replace subjective or emotional expressions (e.g., “cute”, “photogenic”, “popular”) with **neutral, descriptive equivalents** based on appearance or use.  
+- Focus on elements that are meaningful as search terms — such as **category, purpose, season, color, material, style, or occasion**.
+- The output must strictly follow the JSON structure below:
 
   semantic_query: ...,
   bm25_query: ...
 
+User query: {user_query}
 
-ユーザクエリ: {user_query}
-出力:
+Output:
 """
+
+# PROMPT_REWRITE =  """
+# あなたはファッション商品の検索支援アシスタントです。
+# ユーザが入力した自然文の検索クエリを、検索システムで扱いやすい2種類の英語クエリに変換してください。
+
+# 目的：
+# 1. ベクトル検索（semantic search）に適した自然な英文フレーズ（semantic_query）
+# 2. 単語検索（BM25）に適した主要キーワードの列（bm25_query）
+
+# ルール：
+# - 出力は英語のJSON形式で行う。
+# - semantic_query は1文または1フレーズで、自然言語に近いが簡潔な検索文にする。
+# - bm25_query はスペース区切りの主要キーワード群にする。
+# - ユーザが明示していない属性（素材、色、用途など）を推測して追加しない。
+# - 主観的な表現（かわいい、写真映え、人気など）は、見た目や用途に基づく中立的な表現へ置き換える。
+#   例：「写真映え」→「bright and eye-catching」
+# - 検索語として有効な要素（カテゴリ、用途、季節、色、素材、スタイル、オケージョンなど）を中心に構成する。
+# - 出力形式は必ず以下の要素を持つJSON形式に従う：
+
+#   semantic_query: ...,
+#   bm25_query: ...
+
+
+# ユーザクエリ: {user_query}
+# 出力:
+# """
 
 PROMPT_RERANK = """
-以下はユーザの検索意図と、候補の商品説明リストです。
-ユーザ質問: {user_query}
+Below is the user's search intent and a list of candidate product descriptions.
 
-候補一覧（[]内はインデックス）:
+User query: {user_query}
+
+Candidate list (index in []):
 {enumerated}
 
-指示:
-- ユーザが最も欲しい順に並べ替えてください。
-- 出力は JSON 配列で、インデックス番号のみ（例: [2,0,1]）。
-- 余計な文字は出さず、JSONだけを返す。
+### Instruction:
+- Reorder the candidates from most to least relevant to what the user is looking for.
+- Output only a JSON array of the index numbers (e.g., [2, 0, 1]).
+- Do not include any extra text — only return valid JSON.
 """
+
+# PROMPT_RERANK = """
+# 以下はユーザの検索意図と、候補の商品説明リストです。
+# ユーザ質問: {user_query}
+
+# 候補一覧（[]内はインデックス）:
+# {enumerated}
+
+# 指示:
+# - ユーザが最も欲しい順に並べ替えてください。
+# - 出力は JSON 配列で、インデックス番号のみ（例: [2,0,1]）。
+# - 余計な文字は出さず、JSONだけを返す。
+# """
 
 # =========================================================
 # ✳️ クラス定義
