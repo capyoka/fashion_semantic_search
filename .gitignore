@@ -48,8 +48,8 @@ dist/
 
 # ---- App data (RAG) ----
 # Vector DB (Qdrant local storage)
-data/vectorstore/
-**/qdrant/**
+# data/vectorstore/
+# **/qdrant/**
 
 # Processed artifacts (regenerate via preprocess)
 data/processed/

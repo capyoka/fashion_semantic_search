@@ -14,7 +14,7 @@ services:
     depends_on: [qdrant]
     ports: ["8000:8000"]
     volumes:
-      - ./:/app            # ← ソースをそのままマウント
+      - ./:/app
     command: >
       sh -c "
       until wget -qO- http://qdrant:6333/ >/dev/null 2>&1; do

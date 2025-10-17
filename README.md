@@ -86,6 +86,90 @@ curl -X POST "http://localhost:8000/api/search"   -H "Content-Type: application/
   }'
 ```
 
+#### Example
+**input:**  
+- query: "clothes to wear at the beach in summer"
+- top_k: 5
+
+**output:**  
+```
+{
+  "results": [
+    {
+      "id": "148ebebd-6a28-59f5-993c-4a7e154cc966",
+      "score": 0.2,
+      "main_category": "AMAZON FASHION",
+      "title": "NIMIN High Waisted Shorts for Women Comfy Drawstring Casual Elastic Shorts Summer Beach Lightweight Short Pants with Pockets Blue Medium",
+      "average_rating": 3.3,
+      "rating_number": 8,
+      "features": [
+        "Machine Wash"
+      ],
+      "description": [],
+      "price": null,
+      "images": [
+        {
+          "thumb": "https://m.media-amazon.com/images/I/41IUYkIZbSS._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/41IUYkIZbSS._AC_.jpg",
+          "variant": "MAIN",
+          "hi_res": "https://m.media-amazon.com/images/I/61Xb8dissbS._AC_UL1280_.jpg"
+        },
+        {
+          "thumb": "https://m.media-amazon.com/images/I/41nBfZNh8qS._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/41nBfZNh8qS._AC_.jpg",
+          "variant": "PT01",
+          "hi_res": "https://m.media-amazon.com/images/I/6190XTR+XeS._AC_UL1280_.jpg"
+        },
+        {
+          "thumb": "https://m.media-amazon.com/images/I/410JpZvENPS._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/410JpZvENPS._AC_.jpg",
+          "variant": "PT02",
+          "hi_res": "https://m.media-amazon.com/images/I/61oOhxdhe-S._AC_UL1280_.jpg"
+        },
+        {
+          "thumb": "https://m.media-amazon.com/images/I/41RaPIkRLwS._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/41RaPIkRLwS._AC_.jpg",
+          "variant": "PT03",
+          "hi_res": "https://m.media-amazon.com/images/I/71HN9CKUEhS._AC_UL1280_.jpg"
+        },
+        {
+          "thumb": "https://m.media-amazon.com/images/I/41ocnctBSkS._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/41ocnctBSkS._AC_.jpg",
+          "variant": "PT04",
+          "hi_res": "https://m.media-amazon.com/images/I/61gA6a7EurS._AC_UL1280_.jpg"
+        },
+        {
+          "thumb": "https://m.media-amazon.com/images/I/41HyeDPK17S._AC_SR38,50_.jpg",
+          "large": "https://m.media-amazon.com/images/I/41HyeDPK17S._AC_.jpg",
+          "variant": "PT05",
+          "hi_res": "https://m.media-amazon.com/images/I/61SIMdDHsOS._AC_UL1500_.jpg"
+        }
+      ],
+      "videos": [
+        {
+          "title": "NIMIN High Waisted Linen Shorts for Women",
+          "url": "https://www.amazon.com/vdp/0afe26a4b4b348e1b64590409581185a?ref=dp_vse_rvc_0",
+          "user_id": ""
+        }
+      ],
+      "store": "NIMIN",
+      "categories": [],
+      "details": {
+        "Package Dimensions": "11.57 x 8.15 x 1.18 inches; 6.74 Ounces",
+        "Item model number": "NMKZ125-BUM",
+        "Date First Available": "May 7, 2021"
+      },
+      "parent_asin": "B093Q3DG8D",
+      "bought_together": null
+    },
+    {
+      ...
+    },
+    ...
+  ]
+}
+```
+
 ## System Architecture
 See `data/design/high_level_design.png` for the architecture diagram.
 
