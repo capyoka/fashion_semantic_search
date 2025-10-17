@@ -12,7 +12,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-app = FastAPI(title="Hybrid Fashion Search API")
+app = FastAPI(title="Semantic Fashion Search API")
 
 # CORS (allow browser fetch requests)
 app.add_middleware(
