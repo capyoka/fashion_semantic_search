@@ -118,6 +118,8 @@ Input:
   - Title: {title}
   - Store: {store}
   - Features: {features}
+  - Details: {details}
+  - Description: {description}
 
 Task:
 Generate one factual, English caption (3–5 sentences) based on the visible attributes in the image,  
@@ -162,7 +164,7 @@ Output only the caption text.
 # """
 
 
-def caption_images(image_urls: List[str], title: str, store: str, features: str) -> Optional[str]:
+def caption_images(image_urls: List[str], title: str, store: str, features: str, details: str, description: str) -> Optional[str]:
     """Generate caption for one product (with robust retry)"""
     if not image_urls:
         return None
@@ -172,6 +174,8 @@ def caption_images(image_urls: List[str], title: str, store: str, features: str)
         title=title or "",
         store=store or "",
         features=features or "None",
+        details=details or "",
+        description=description or "",
     )
 
     # Send one image at a time
@@ -256,8 +260,11 @@ def run(input_path: str, qdrant_path: str = QDRANT_PATH):
         title = prod.get("title", "")
         store = prod.get("store", "")
         features = "; ".join(prod.get("features", []))
+        details = prod.get("details", "")
+        description = prod.get("description", "")
+
         images = extract_image_refs(prod)
-        caption = caption_images(images, title, store, features)
+        caption = caption_images(images, title, store, features, details, description)
         search_text = " ".join([title, features, caption or ""]).strip()
         payload = {**prod, "_id": pid, "_caption": caption, "_search_text": search_text}
         return payload, search_text
