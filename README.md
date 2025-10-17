@@ -80,7 +80,7 @@ http://127.0.0.1:8000/static/index.html
 
 #### 2. Test via API
 ```bash
-curl -X POST "http://localhost:8000/api/search"   -H "Content-Type: application/json"   -d '{
+curl -X POST "http://localhost:8000/search"   -H "Content-Type: application/json"   -d '{
     "query": "clothes to wear at the beach in summer",
     "top_k": 30
   }'
@@ -197,6 +197,8 @@ rag_app/
 │   ├── sample/                    # Sample data
 │   └── vectorstore/
 │       └── qdrant/                # Qdrant vector database
+├── static/
+│   └── index.html/                # Prototype front end
 ├── notebooks/                     # EDA and experimental notebooks
 ├── scripts/
 │   └── run_preprocess.py          # Preprocessing execution script
