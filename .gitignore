@@ -59,6 +59,3 @@ data/sample/
 
 # (Optional) If raw data is large/private, uncomment:
 # data/raw/
-
-# ---- Misc ----
-*.zip
